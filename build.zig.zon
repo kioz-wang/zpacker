@@ -1,0 +1,14 @@
+.{
+    .name = "filepacker",
+    .version = "0.1.0",
+    .minimum_zig_version = "0.13.0",
+    .dependencies = .{
+        .zargs = .{
+            .url = "https://github.com/kioz-wang/zargs/archive/refs/tags/v0.13.0.tar.gz",
+            .hash = "1220495aeb7c09f978829fefef36954dc8957aafb9d9ca8b291339ae7224181edc68",
+        },
+    },
+    .paths = .{
+        "",
+    },
+}
