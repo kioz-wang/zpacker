@@ -1,11 +1,12 @@
 .{
-    .name = "filepacker",
-    .version = "0.1.0",
-    .minimum_zig_version = "0.13.0",
+    .name = .filepacker,
+    .fingerprint = 0xf5995dea499352c9,
+    .version = "0.1.1",
+    .minimum_zig_version = "0.14.0",
     .dependencies = .{
         .zargs = .{
-            .url = "https://github.com/kioz-wang/zargs/archive/refs/tags/v0.13.0.tar.gz",
-            .hash = "1220495aeb7c09f978829fefef36954dc8957aafb9d9ca8b291339ae7224181edc68",
+            .url = "git+https://github.com/kioz-wang/zargs#09a5babc3f2433c9031be7c1c1084db02b7e08f1",
+            .hash = "zargs-0.14.0-tqzWbl96AQB9-72bQHrmNICwipqWioubr5VmqTtIkOsN",
         },
     },
     .paths = .{

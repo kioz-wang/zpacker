@@ -41,7 +41,7 @@ pub const Section = struct {
         const json_default: ?*const anyopaque = if (config.default) |d| @ptrCast(&d) else null;
         var core_default: ?*const anyopaque = json_default;
         switch (@typeInfo(T)) {
-            .Int, .Float, .Bool, .Enum => {
+            .int, .float, .bool, .@"enum" => {
                 if (config.length != 0) {
                     @compileError("length must be 0 when " ++ @typeName(T));
                 }
@@ -67,20 +67,20 @@ pub const Section = struct {
         const JsonT = T;
         self.json_exts = self.json_exts ++ [_]StructField{.{
             .alignment = @alignOf(JsonT),
-            .default_value = json_default,
+            .default_value_ptr = json_default,
             .is_comptime = false,
             .name = name,
             .type = JsonT,
         }};
 
-        const CoreT = if (T == []const u8) @Type(.{ .Array = .{
+        const CoreT = if (T == []const u8) @Type(.{ .array = .{
             .len = config.length,
             .child = u8,
-            .sentinel = null,
+            .sentinel_ptr = null,
         } }) else T;
         self.core_exts = self.core_exts ++ [_]StructField{.{
             .alignment = @alignOf(CoreT),
-            .default_value = core_default,
+            .default_value_ptr = core_default,
             .is_comptime = false,
             .name = name,
             .type = CoreT,
@@ -91,9 +91,9 @@ pub const Section = struct {
         const Simple = struct {
             filename: []const u8,
         };
-        var s = @typeInfo(Simple).Struct;
+        var s = @typeInfo(Simple).@"struct";
         s.fields = s.fields ++ self.json_exts;
-        return @Type(.{ .Struct = s });
+        return @Type(.{ .@"struct" = s });
     }
     pub fn Core(self: @This(), FN_MAXSIZE: comptime_int) type {
         const Simple = extern struct {
@@ -101,13 +101,13 @@ pub const Section = struct {
             offset: u32 = 0,
             length: u32 = 0,
         };
-        var s = @typeInfo(Simple).Struct;
+        var s = @typeInfo(Simple).@"struct";
         s.fields = s.fields ++ self.core_exts;
-        return @Type(.{ .Struct = s });
+        return @Type(.{ .@"struct" = s });
     }
     pub fn json2core(JsonT: type, CoreT: type, json: *const JsonT) CoreT {
         var core = CoreT{};
-        inline for (@typeInfo(JsonT).Struct.fields) |field| {
+        inline for (@typeInfo(JsonT).@"struct".fields) |field| {
             if (field.type == []const u8) {
                 @memcpy(@field(core, field.name)[0..@field(json, field.name).len], @field(json, field.name));
             } else {
@@ -356,10 +356,10 @@ pub fn Packer(
             for (0..core.section_num) |i| {
                 const section = &self.sections[i];
                 log.info("Sections[{d}] {x:0>8},{x:0>8} {s}", .{ i, section.offset, section.length, section.filename });
-                inline for (@typeInfo(Section_T.Core).Struct.fields) |field| {
+                inline for (@typeInfo(Section_T.Core).@"struct".fields) |field| {
                     if (!(std.mem.eql(u8, "filename", field.name) or std.mem.eql(u8, "offset", field.name) or std.mem.eql(u8, "length", field.name))) {
                         const info = @typeInfo(field.type);
-                        if (info == .Array and info.Array.child == u8) {
+                        if (info == .array and info.array.child == u8) {
                             log.debug("  " ++ field.name ++ " {s}", .{@field(section, field.name)});
                         } else {
                             log.debug("  " ++ field.name ++ " {d}", .{@field(section, field.name)});

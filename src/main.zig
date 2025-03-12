@@ -2,7 +2,7 @@ const std = @import("std");
 const fpck = @import("root.zig");
 const zargs = @import("zargs");
 const Command = zargs.Command;
-const Iter = zargs.Iter;
+const TokenIter = zargs.TokenIter;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -34,7 +34,7 @@ pub fn main() !void {
 
     _ = cmd.subCmd(pack).subCmd(unpack).subCmd(show);
 
-    var it = try Iter.init(allocator, .{});
+    var it = try TokenIter.init(allocator, .{});
     _ = try it.next();
     defer it.deinit();
     const args = try cmd.parse(&it);
