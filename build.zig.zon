@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.14.0",
     .dependencies = .{
         .zargs = .{
-            .url = "git+https://github.com/kioz-wang/zargs#dac4c9565545301da6d4f79e39c772eb17ffc068",
-            .hash = "zargs-0.14.1-tqzWbhV6AQCkbwLpB0z_1G26Zs9wpbiZq_Rca9J4GLu1",
+            .url = "https://github.com/kioz-wang/zargs/archive/refs/tags/v0.14.3.tar.gz",
+            .hash = "zargs-0.14.1-tqzWbt6IAQBe7aehYXT0iJ__8tNeKU4Hpzfw9I59ojdJ",
         },
     },
     .paths = .{
