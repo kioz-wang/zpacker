@@ -1,43 +1,67 @@
 const std = @import("std");
-const fpck = @import("root.zig");
+const fpkg = @import("root.zig");
 const zargs = @import("zargs");
 const Command = zargs.Command;
-const TokenIter = zargs.TokenIter;
+const Arg = zargs.Arg;
+
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+const allocator = gpa.allocator();
+
+const section = blk: {
+    var s: fpkg.Section = .{};
+    _ = s.ext("attr1", u16, .{ .default = 6 }).ext("attr2", []const u8, .{ .default = "bye", .length = 6 });
+    break :blk s;
+};
+const Packer = fpkg.Packer(0x6679_7985, 1, .{ .Json = section.Json(), .Core = section.Core(16) }, u32, fpkg.crc32zlib_compute);
+
+const show = Command.new("show").about("Show contents of package")
+    .arg(Arg.optArg("input", []const u8)
+    .short('i').long("in")
+    .help("Path of package"));
+
+const pack = Command.new("pack").about("Pack files to a package")
+    .arg(Arg.optArg("config", []const u8)
+        .long("cfg")
+        .help("Howto pack")
+        .default("config.json"))
+    .arg(Arg.optArg("from", []const u8)
+        .long("from")
+        .help("Path that find files from")
+        .default("."))
+    .arg(Arg.optArg("header", ?[]const u8)
+        .long("header").help("Path of header"))
+    .arg(Arg.optArg("payload", ?[]const u8)
+        .long("payload").help("Path of payload"))
+    .arg(Arg.optArg("align", u32)
+    .long("align").default(1));
+
+const unpack = Command.new("unpack").about("Unpack a package")
+    .optArg("to", []const u8, .{ .long = "to", .help = "Path that unpack to", .default = "." })
+    .optArg("input", []const u8, .{ .long = "in", .short = 'i', .help = "Path of package" });
+
+const cwd = std.fs.cwd();
+
+fn actionShow(args: *show.Result()) void {
+    _ = args;
+}
+fn actionPack(args: *pack.Result()) void {
+    _ = args;
+}
+fn actionUnpack(args: *unpack.Result()) void {
+    _ = args;
+}
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    comptime var section: fpck.Section = .{};
-    _ = section.ext("attr1", u16, .{ .default = 6 }).ext("attr2", []const u8, .{ .default = "bye", .length = 6 });
-    const Packer = fpck.Packer(
-        0x6679_7985,
-        1,
-        .{ .Json = section.Json(), .Core = section.Core(16) },
-        u32,
-        fpck.crc32zlib_compute,
-    );
-    var cwd = std.fs.cwd();
+    comptime var _show = show;
+    comptime _show.callBack(actionShow);
+    comptime var _pack = pack;
+    comptime _pack.callBack(actionPack);
+    comptime var _unpack = unpack;
+    comptime _unpack.callBack(actionUnpack);
+    const cmd = Command.new("filepacker").requireSub("sub")
+        .sub(_show).sub(_pack).sub(_unpack);
 
-    comptime var cmd: Command = .{ .name = "filepacker", .use_subCmd = "sub" };
-
-    comptime var pack: Command = .{ .name = "pack", .description = "Pack some files" };
-    _ = pack.optArg("config", []const u8, .{ .long = "cfg", .help = "Tell me how to pack", .default = "config.json" });
-    _ = pack.optArg("from", []const u8, .{ .long = "from", .help = "Tell me a directory to find files", .default = "." });
-    _ = pack.optArg("output", []const u8, .{ .short = 'o', .long = "out", .help = "Tell me a path to packed file" });
-
-    comptime var unpack: Command = .{ .name = "unpack", .description = "Unpack to some files" };
-    _ = unpack.optArg("to", []const u8, .{ .long = "to", .help = "Tell me a directory to unpack files", .default = "." });
-    _ = unpack.optArg("input", []const u8, .{ .short = 'i', .long = "in", .help = "Tell me a path to packed file" });
-
-    comptime var show: Command = .{ .name = "show", .description = "Show which files in it" };
-    _ = show.optArg("input", []const u8, .{ .short = 'i', .long = "in", .help = "Tell me a path to packed file" });
-
-    _ = cmd.subCmd(pack).subCmd(unpack).subCmd(show);
-
-    var it = try TokenIter.init(allocator, .{});
-    _ = try it.next();
-    defer it.deinit();
-    const args = try cmd.parse(&it);
+    const args = try cmd.parse(allocator);
 
     switch (args.sub) {
         .pack => |a| {
@@ -51,7 +75,7 @@ pub fn main() !void {
 
             const from = try cwd.openDir(a.from, .{});
 
-            const output_f = try cwd.createFile(a.output, .{});
+            const output_f = try cwd.createFile(a.payload.?, .{});
             defer output_f.close();
 
             try packer.pack(from, null, output_f.writer().any(), .{ .prefix_header = true });
