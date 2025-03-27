@@ -23,13 +23,13 @@ const pack = Command.new("pack").about("Pack a package from files")
     .arg(Arg.optArg("header", ?[]const u8).long("header").help("Path of header"))
     .arg(Arg.optArg("payload", ?[]const u8).long("payload").help("Path of payload"))
     .arg(Arg.opt("prefix", bool).long("no_prefix").default(true).help("Don't prefix header to payload"))
-    .arg(Arg.optArg("chunk", usize).long("chunk").default(4096).help("Chunk bytes per IO"))
+    .arg(Arg.optArg("chunk", usize).long("chunk").default(4 * 1024 * 1024).help("Chunk bytes per IO"))
     .arg(Arg.optArg("align", u32).long("align").default(1));
 
 const unpack = Command.new("unpack").about("Unpack a package to files")
     .arg(Arg.optArg("to", []const u8).long("to").help("Path that unpack to").default("."))
     .posArg("input", []const u8, .{ .help = "Path of package" })
-    .optArg("chunk", usize, .{ .long = "chunk", .default = 4096, .help = "Chunk bytes per IO" })
+    .optArg("chunk", usize, .{ .long = "chunk", .default = 4 * 1024 * 1024, .help = "Chunk bytes per IO" })
     .arg(Arg.optArg("header", ?[]const u8).long("save_header").help("Save header to"));
 
 const cwd = std.fs.cwd();
