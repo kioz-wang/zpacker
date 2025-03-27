@@ -92,11 +92,11 @@ fn actionUnpack(args: *unpack.Result()) void {
     };
     defer packer.destory();
 
+    const to = cwd.openDir(args.to, .{}) catch |e| exit(1, "fail to openDir({s}) ({})", .{ args.to, e });
     const header = if (args.header) |s| blk: {
-        const p = cwd.createFile(s, .{}) catch |e| exit(1, "fail to create header {s} ({})", .{ s, e });
+        const p = to.createFile(s, .{}) catch |e| exit(1, "fail to create header {s} ({})", .{ s, e });
         break :blk p.writer().any();
     } else null;
-    const to = cwd.openDir(args.to, .{}) catch |e| exit(1, "fail to openDir({s}) ({})", .{ args.to, e });
 
     packer.unpack(f.reader().any(), to, .{ .save_header = header, .chunk = args.chunk }) catch |e| {
         exit(1, "fail to unpack ({})", .{e});
