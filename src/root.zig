@@ -267,6 +267,29 @@ const Dir = std.fs.Dir;
 const AnyReader = std.io.AnyReader;
 const AnyWriter = std.io.AnyWriter;
 
+fn streamCopy(from: AnyReader, to: AnyWriter, chunk: usize, max_bytes: ?usize, allocator: std.mem.Allocator) !usize {
+    const buffer = try allocator.alloc(u8, chunk);
+    defer allocator.free(buffer);
+    var expect: usize = chunk;
+    var actual: usize = 0;
+    var total: usize = 0;
+    var remain_bytes = max_bytes;
+    while (true) {
+        if (remain_bytes) |*remain| {
+            if (remain.* == 0) break;
+            if (expect > remain.*) {
+                expect = remain.*;
+            }
+            remain.* -= expect;
+        }
+        actual = try from.readAll(buffer[0..expect]);
+        try to.writeAll(buffer[0..actual]);
+        total += actual;
+        if (actual != expect) break;
+    }
+    return total;
+}
+
 const log = std.log.scoped(.packer);
 
 pub fn Packer(
@@ -374,7 +397,7 @@ pub fn Packer(
             from: Dir,
             header: ?AnyWriter,
             payload: ?AnyWriter,
-            config: struct { prefix_header: bool = false, align_: u32 = 1, pad_byte: struct { u8, u8 } = .{ 0xf1, 0xe2 } },
+            config: struct { prefix_header: bool = false, align_: u32 = 1, pad_byte: struct { u8, u8 } = .{ 0xf1, 0xe2 }, chunk: usize = 4096 },
         ) !void {
             var offset: u32 = 0;
             for (0..self.core.section_num) |i| {
@@ -404,21 +427,22 @@ pub fn Packer(
                 var last_section: ?*align(1) Section_T.Core = null;
                 for (0..self.core.section_num) |i| {
                     const section = &self.sections[i];
-                    var buffer: [256]u8 = undefined;
-                    const sub_path = std.mem.sliceTo(&section.filename, 0);
-                    const f = try from.openFile(sub_path, .{});
-                    defer f.close();
-                    // TODO read by chunk
-                    const cont = try f.readToEndAlloc(self.allocator, section.length);
-                    defer self.allocator.free(cont);
                     if (last_section) |last| {
                         try p.writeByteNTimes(config.pad_byte[1], section.offset - last.offset - last.length);
                     } else if (config.prefix_header) {
                         try p.writeByteNTimes(config.pad_byte[0], upAlign(u32, self.core.length, config.align_) - self.core.length);
                     }
                     last_section = section;
-                    try p.writeAll(cont);
-                    log.debug("[payload] pack sections[{d}] from {s}", .{ i, try from.realpath(sub_path, &buffer) });
+
+                    const sub_path = std.mem.sliceTo(&section.filename, 0);
+                    const f = try from.openFile(sub_path, .{});
+                    defer f.close();
+
+                    const actual = try streamCopy(f.reader().any(), p, config.chunk, section.length, self.allocator);
+                    if (actual != section.length) return error.FileSizeChanged;
+
+                    var buffer: [256]u8 = undefined;
+                    log.debug("[payload] pack sections[{d}] {x:0>8} bytes from {s}", .{ i, actual, try from.realpath(sub_path, &buffer) });
                 }
                 log.debug("[payload] complete to pack", .{});
             }
@@ -427,7 +451,7 @@ pub fn Packer(
             self: *const @This(),
             payload: AnyReader,
             to: Dir,
-            config: struct { save_header: ?AnyWriter = null },
+            config: struct { save_header: ?AnyWriter = null, chunk: usize = 4096 },
         ) !void {
             if (!self.unpackable) {
                 return error.Unsupported;
@@ -439,21 +463,20 @@ pub fn Packer(
             var last_section: ?*align(1) Section_T.Core = null;
             for (0..self.core.section_num) |i| {
                 const section = &self.sections[i];
-                const cont = try self.allocator.alloc(u8, section.length);
-                defer self.allocator.free(cont);
                 if (last_section) |last| {
                     try payload.skipBytes(section.offset - last.offset - last.length, .{});
                 }
                 last_section = section;
-                if (try payload.readAll(cont) != section.length) {
-                    return error.EndOfStream;
-                }
-                var buffer: [256]u8 = undefined;
+
                 const sub_path = std.mem.sliceTo(&section.filename, 0);
                 const f = try to.createFile(sub_path, .{});
                 defer f.close();
-                try f.writeAll(cont);
-                log.debug("[payload] unpack sections[{d}] to {s}", .{ i, try to.realpath(sub_path, &buffer) });
+
+                const actual = try streamCopy(payload, f.writer().any(), config.chunk, section.length, self.allocator);
+                if (actual != section.length) return error.EndOfStream;
+
+                var buffer: [256]u8 = undefined;
+                log.debug("[payload] unpack sections[{d}] {x:0>8} bytes to {s}", .{ i, actual, try to.realpath(sub_path, &buffer) });
             }
             log.debug("[payload] complete to unpack", .{});
         }
