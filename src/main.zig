@@ -32,13 +32,13 @@ const unpack = Command.new("unpack").about("Unpack a package to files")
     .optArg("chunk", usize, .{ .long = "chunk", .default = 4 * 1024 * 1024, .help = "Chunk bytes per IO" })
     .arg(Arg.optArg("header", ?[]const u8).long("save_header").help("Save header to"));
 
-const cwd = std.fs.cwd();
 fn exit(status: u8, comptime fmt: []const u8, args: anytype) noreturn {
     std.log.err(fmt, args);
     std.process.exit(status);
 }
 
 fn actionShow(args: *show.Result()) void {
+    const cwd = std.fs.cwd();
     const f = cwd.openFile(args.input, .{}) catch |e| {
         exit(1, "fail to open {s} ({})", .{ args.input, e });
     };
@@ -51,6 +51,7 @@ fn actionShow(args: *show.Result()) void {
 }
 
 fn actionPack(args: *pack.Result()) void {
+    const cwd = std.fs.cwd();
     const f = cwd.openFile(args.config, .{}) catch |e| {
         exit(1, "fail to open {s} ({})", .{ args.config, e });
     };
@@ -83,6 +84,7 @@ fn actionPack(args: *pack.Result()) void {
 }
 
 fn actionUnpack(args: *unpack.Result()) void {
+    const cwd = std.fs.cwd();
     const f = cwd.openFile(args.input, .{}) catch |e| {
         exit(1, "fail to open {s} ({})", .{ args.input, e });
     };
