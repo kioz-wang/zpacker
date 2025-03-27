@@ -360,14 +360,14 @@ pub fn Packer(
                     if (!(std.mem.eql(u8, "filename", field.name) or std.mem.eql(u8, "offset", field.name) or std.mem.eql(u8, "length", field.name))) {
                         const info = @typeInfo(field.type);
                         if (info == .array and info.array.child == u8) {
-                            log.debug("  " ++ field.name ++ " {s}", .{@field(section, field.name)});
+                            log.info("  " ++ field.name ++ " {s}", .{@field(section, field.name)});
                         } else {
-                            log.debug("  " ++ field.name ++ " {d}", .{@field(section, field.name)});
+                            log.info("  " ++ field.name ++ " {d}", .{@field(section, field.name)});
                         }
                     }
                 }
             }
-            log.debug("Chksum is {x:0>8}", .{self.chksum.*});
+            log.info("Chksum is {x:0>8}", .{self.chksum.*});
         }
         pub fn pack(
             self: *@This(),
@@ -404,8 +404,11 @@ pub fn Packer(
                 var last_section: ?*align(1) Section_T.Core = null;
                 for (0..self.core.section_num) |i| {
                     const section = &self.sections[i];
-                    const f = try from.openFile(std.mem.sliceTo(&section.filename, 0), .{});
+                    var buffer: [256]u8 = undefined;
+                    const sub_path = std.mem.sliceTo(&section.filename, 0);
+                    const f = try from.openFile(sub_path, .{});
                     defer f.close();
+                    // TODO read by chunk
                     const cont = try f.readToEndAlloc(self.allocator, section.length);
                     defer self.allocator.free(cont);
                     if (last_section) |last| {
@@ -415,7 +418,7 @@ pub fn Packer(
                     }
                     last_section = section;
                     try p.writeAll(cont);
-                    log.debug("[payload] pack sections[{d}]", .{i});
+                    log.debug("[payload] pack sections[{d}] from {s}", .{ i, try from.realpath(sub_path, &buffer) });
                 }
                 log.debug("[payload] complete to pack", .{});
             }
@@ -424,15 +427,13 @@ pub fn Packer(
             self: *const @This(),
             payload: AnyReader,
             to: Dir,
-            config: struct { save_header: ?[]const u8 = null },
+            config: struct { save_header: ?AnyWriter = null },
         ) !void {
             if (!self.unpackable) {
                 return error.Unsupported;
             }
             if (config.save_header) |h| {
-                const f = try to.createFile(h, .{});
-                defer f.close();
-                try f.writeAll(self._inner);
+                try h.writeAll(self._inner);
                 log.debug("[header] complete to write", .{});
             }
             var last_section: ?*align(1) Section_T.Core = null;
@@ -447,10 +448,12 @@ pub fn Packer(
                 if (try payload.readAll(cont) != section.length) {
                     return error.EndOfStream;
                 }
-                const f = try to.createFile(std.mem.sliceTo(&section.filename, 0), .{});
+                var buffer: [256]u8 = undefined;
+                const sub_path = std.mem.sliceTo(&section.filename, 0);
+                const f = try to.createFile(sub_path, .{});
                 defer f.close();
                 try f.writeAll(cont);
-                log.debug("[payload] unpack sections[{d}]", .{i});
+                log.debug("[payload] unpack sections[{d}] to {s}", .{ i, try to.realpath(sub_path, &buffer) });
             }
             log.debug("[payload] complete to unpack", .{});
         }
