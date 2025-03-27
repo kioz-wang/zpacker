@@ -111,6 +111,7 @@ pub fn main() !void {
     comptime var _unpack = unpack;
     comptime _unpack.callBack(actionUnpack);
     comptime var cmd = Command.new("filepacker").requireSub("sub")
+        .version("0.1.2").author("Kioz Wang")
         .sub(_show).sub(_pack).sub(_unpack);
     comptime cmd.callBack(struct {
         const C = cmd;
