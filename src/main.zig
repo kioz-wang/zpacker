@@ -7,17 +7,17 @@ const Arg = zargs.Arg;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
-const section = blk: {
-    var s: fpkg.Section = .{};
-    _ = s.ext("attr1", u16, .{ .default = 6 }).ext("attr2", []const u8, .{ .default = "bye", .length = 6 });
-    break :blk s;
-};
-const Packer = fpkg.Packer(0x6679_7985, 1, .{ .Json = section.Json(), .Core = section.Core(16) }, u32, fpkg.crc32zlib_compute);
+const section = fpkg.Section.new()
+    .field("attr1", u16, .{ .default = 6 })
+    .field("attr2", []const u8, .{ .default = "bye", .length = 6 });
+const Packer = fpkg.Packer(0x6679_7985, 1, section, 16, true, u32, fpkg.crc32zlib_compute);
 
-const show = Command.new("show").about("Show contents of package")
+const show = Command.new("show").alias("s")
+    .about("Show contents of package")
     .arg(Arg.posArg("input", []const u8).help("Path of package"));
 
-const pack = Command.new("pack").about("Pack a package from files")
+const pack = Command.new("pack").alias("p")
+    .about("Pack a package from files")
     .arg(Arg.posArg("config", []const u8).help("Howto pack (maxsize 4096) (Try as header binary if fail to parse as json)").default("config.json"))
     .arg(Arg.optArg("from", []const u8).long("from").help("Path that find files from").default("."))
     .arg(Arg.optArg("header", ?[]const u8).long("header").help("Path of header"))
@@ -26,7 +26,8 @@ const pack = Command.new("pack").about("Pack a package from files")
     .arg(Arg.optArg("chunk", usize).long("chunk").default(4 * 1024 * 1024).help("Chunk bytes per IO"))
     .arg(Arg.optArg("align", u32).long("align").default(1));
 
-const unpack = Command.new("unpack").about("Unpack a package to files")
+const unpack = Command.new("unpack").alias("u")
+    .about("Unpack a package to files")
     .arg(Arg.optArg("to", []const u8).long("to").help("Path that unpack to").default("."))
     .posArg("input", []const u8, .{ .help = "Path of package" })
     .optArg("chunk", usize, .{ .long = "chunk", .default = 4 * 1024 * 1024, .help = "Chunk bytes per IO" })
@@ -105,26 +106,20 @@ fn actionUnpack(args: *unpack.Result()) void {
     };
 }
 
-pub fn main() !void {
-    comptime var _show = show;
-    comptime _show.callBack(actionShow);
-    comptime var _pack = pack;
-    comptime _pack.callBack(actionPack);
-    comptime var _unpack = unpack;
-    comptime _unpack.callBack(actionUnpack);
-    comptime var cmd = Command.new("filepacker").requireSub("sub")
-        .version("0.1.2").author("Kioz Wang")
-        .sub(_show).sub(_pack).sub(_unpack);
-    comptime cmd.callBack(struct {
-        const C = cmd;
-        fn f(r: *C.Result()) void {
-            std.log.info("Success {s}", .{@tagName(r.sub)});
-        }
-    }.f);
+const app = Command.new("filepacker").requireSub("action")
+    .version("0.1.3").author("Kioz Wang")
+    .sub(show.callBack(actionShow))
+    .sub(pack.callBack(actionPack))
+    .sub(unpack.callBack(actionUnpack));
 
-    const args = cmd.parse(allocator) catch |e| {
+pub fn main() !void {
+    const args = app.callBack(struct {
+        fn f(r: *app.Result()) void {
+            std.log.info("Success {s}", .{@tagName(r.action)});
+        }
+    }.f).parse(allocator) catch |e| {
         std.log.err("command parse fail {}", .{e});
         return e;
     };
-    defer cmd.destroy(&args, allocator);
+    defer app.destroy(&args, allocator);
 }
