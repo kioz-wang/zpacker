@@ -7,12 +7,10 @@ const Arg = zargs.Arg;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
-const section = blk: {
-    var s: fpkg.Section = .{};
-    _ = s.ext("attr1", u16, .{ .default = 6 }).ext("attr2", []const u8, .{ .default = "bye", .length = 6 });
-    break :blk s;
-};
-const Packer = fpkg.Packer(0x6679_7985, 1, .{ .Json = section.Json(), .Core = section.Core(16) }, u32, fpkg.crc32zlib_compute);
+const section = fpkg.Section.new()
+    .field("attr1", u16, .{ .default = 6 })
+    .field("attr2", []const u8, .{ .default = "bye", .length = 6 });
+const Packer = fpkg.Packer(0x6679_7985, 1, section, 16, true, u32, fpkg.crc32zlib_compute);
 
 const show = Command.new("show").alias("s")
     .about("Show contents of package")

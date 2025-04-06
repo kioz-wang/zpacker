@@ -32,12 +32,18 @@ test "Init Array" {
 }
 
 pub const Section = struct {
-    json_exts: []const StructField = &.{},
-    core_exts: []const StructField = &.{},
-    pub fn ext(self: *@This(), name: [:0]const u8, T: type, config: struct {
+    const Self = @This();
+    json_exts: []const StructField,
+    core_exts: []const StructField,
+
+    pub fn new() Self {
+        return .{ .json_exts = &.{}, .core_exts = &.{} };
+    }
+    pub fn field(self: Self, name: [:0]const u8, T: type, config: struct {
         default: ?T = null,
         length: usize = 0,
-    }) *@This() {
+    }) Self {
+        var section = self;
         const json_default: ?*const anyopaque = if (config.default) |d| @ptrCast(&d) else null;
         var core_default: ?*const anyopaque = json_default;
         switch (@typeInfo(T)) {
@@ -65,7 +71,7 @@ pub const Section = struct {
         }
 
         const JsonT = T;
-        self.json_exts = self.json_exts ++ [_]StructField{.{
+        section.json_exts = section.json_exts ++ [_]StructField{.{
             .alignment = @alignOf(JsonT),
             .default_value_ptr = json_default,
             .is_comptime = false,
@@ -78,16 +84,16 @@ pub const Section = struct {
             .child = u8,
             .sentinel_ptr = null,
         } }) else T;
-        self.core_exts = self.core_exts ++ [_]StructField{.{
+        section.core_exts = section.core_exts ++ [_]StructField{.{
             .alignment = @alignOf(CoreT),
             .default_value_ptr = core_default,
             .is_comptime = false,
             .name = name,
             .type = CoreT,
         }};
-        return self;
+        return section;
     }
-    pub fn Json(self: @This()) type {
+    pub fn Json(self: Self) type {
         const Simple = struct {
             filename: []const u8,
         };
@@ -95,11 +101,11 @@ pub const Section = struct {
         s.fields = s.fields ++ self.json_exts;
         return @Type(.{ .@"struct" = s });
     }
-    pub fn Core(self: @This(), FN_MAXSIZE: comptime_int) type {
+    pub fn Core(self: Self, FN_MAXSIZE: comptime_int, comptime big: bool) type {
         const Simple = extern struct {
             filename: [FN_MAXSIZE]u8 = std.mem.zeroes([FN_MAXSIZE]u8),
-            offset: u32 = 0,
-            length: u32 = 0,
+            offset: if (big) u64 else u32 = 0,
+            length: if (big) u64 else u32 = 0,
         };
         var s = @typeInfo(Simple).@"struct";
         s.fields = s.fields ++ self.core_exts;
@@ -107,11 +113,11 @@ pub const Section = struct {
     }
     pub fn json2core(JsonT: type, CoreT: type, json: *const JsonT) CoreT {
         var core = CoreT{};
-        inline for (@typeInfo(JsonT).@"struct".fields) |field| {
-            if (field.type == []const u8) {
-                @memcpy(@field(core, field.name)[0..@field(json, field.name).len], @field(json, field.name));
+        inline for (@typeInfo(JsonT).@"struct".fields) |f| {
+            if (f.type == []const u8) {
+                @memcpy(@field(core, f.name)[0..@field(json, f.name).len], @field(json, f.name));
             } else {
-                @field(core, field.name) = @field(json, field.name);
+                @field(core, f.name) = @field(json, f.name);
             }
         }
         return core;
@@ -124,7 +130,7 @@ test "JsonSection parse Simple" {
         \\   "filename": "file0"
         \\ }
     ;
-    comptime var section: Section = .{};
+    const section = Section.new();
     const parsed = try std.json.parseFromSlice(section.Json(), testing.allocator, JSON_STR, .{});
     defer parsed.deinit();
     const json_section = parsed.value;
@@ -145,8 +151,10 @@ test "JsonSection parse Ext" {
         \\   }
         \\ ] 
     ;
-    comptime var section: Section = .{};
-    _ = section.ext("attr1", []const u8, .{ .length = 6 }).ext("attr2", u32, .{ .default = 9 }).ext("attr3", []const u8, .{ .default = "bye", .length = 10 });
+    const section = Section.new()
+        .field("attr1", []const u8, .{ .length = 6 })
+        .field("attr2", u32, .{ .default = 9 })
+        .field("attr3", []const u8, .{ .default = "bye", .length = 10 });
     const parsed = try std.json.parseFromSlice([]section.Json(), testing.allocator, JSON_STR, .{});
     defer parsed.deinit();
     const json_sections = parsed.value;
@@ -171,12 +179,12 @@ test "CoreSection Simple" {
         \\   "filename": "file0"
         \\ }
     ;
-    comptime var section: Section = .{};
+    const section = Section.new();
     const parsed = try std.json.parseFromSlice(section.Json(), testing.allocator, JSON_STR, .{});
     defer parsed.deinit();
-    var core_section = Section.json2core(section.Json(), section.Core(5), &parsed.value);
+    var core_section = Section.json2core(section.Json(), section.Core(5, false), &parsed.value);
     core_section.length = 1;
-    const CORE = section.Core(5){ .filename = initArray(u8, "file0", 5), .length = 1 };
+    const CORE = section.Core(5, false){ .filename = initArray(u8, "file0", 5), .length = 1 };
     try testing.expectEqualDeep(CORE, core_section);
 }
 
@@ -188,15 +196,17 @@ test "CoreSection Ext" {
         \\   "attr2": 3
         \\ }
     ;
-    comptime var section: Section = .{};
-    _ = section.ext("attr1", []const u8, .{ .length = 6 }).ext("attr2", u32, .{ .default = 9 }).ext("attr3", []const u8, .{ .default = "bye", .length = 10 });
+    const section = Section.new()
+        .field("attr1", []const u8, .{ .length = 6 })
+        .field("attr2", u32, .{ .default = 9 })
+        .field("attr3", []const u8, .{ .default = "bye", .length = 10 });
     const parsed = try std.json.parseFromSlice(section.Json(), testing.allocator, JSON_STR, .{});
     defer parsed.deinit();
     const json_section = parsed.value;
     try testing.expectEqualStrings("file0", json_section.filename);
-    var core_section = Section.json2core(section.Json(), section.Core(32), &json_section);
+    var core_section = Section.json2core(section.Json(), section.Core(32, false), &json_section);
     core_section.length = 1;
-    const CORE = section.Core(32){
+    const CORE = section.Core(32, false){
         .filename = initArray(u8, "file0", 32),
         .length = 1,
         .attr1 = initArray(u8, "hello", 6),
@@ -295,7 +305,9 @@ const log = std.log.scoped(.packer);
 pub fn Packer(
     MAGIC: comptime_int,
     VERSION: comptime_int,
-    Section_T: struct { Json: type, Core: type },
+    section: Section,
+    FN_MAXSIZE: comptime_int,
+    big_file: bool,
     Chksum_T: type,
     Chksum_F: fn ([]const u8) Chksum_T,
 ) type {
@@ -305,20 +317,26 @@ pub fn Packer(
         length: u32 = undefined,
         section_num: u32 = undefined,
     };
+    const SectionJ = section.Json();
+    const SectionC = section.Core(FN_MAXSIZE, big_file);
+    const OffsetT = if (big_file) u64 else u32;
+
     return struct {
+        const Self = @This();
         core: *align(1) Core = undefined,
-        sections: [*]align(1) Section_T.Core = undefined,
+        sections: [*]align(1) SectionC = undefined,
         chksum: *align(1) Chksum_T = undefined,
         _inner: []u8 = undefined,
         allocator: Allocator,
         unpackable: bool = false,
-        pub fn from_json_str(json_str: []const u8, allocator: Allocator) !@This() {
-            const parsed = try std.json.parseFromSlice([]Section_T.Json, allocator, json_str, .{});
-            defer parsed.deinit();
-            const json_sections = parsed.value;
 
-            var packer = @This(){ .allocator = allocator };
-            const length = @sizeOf(Core) + @sizeOf(Section_T.Core) * json_sections.len + @sizeOf(Chksum_T);
+        pub fn from_json_str(json_str: []const u8, allocator: Allocator) !Self {
+            const parsed = try std.json.parseFromSlice([]SectionJ, allocator, json_str, .{});
+            defer parsed.deinit();
+            const sectionj = parsed.value;
+
+            var packer = Self{ .allocator = allocator };
+            const length = @sizeOf(Core) + @sizeOf(SectionC) * sectionj.len + @sizeOf(Chksum_T);
             packer._inner = try allocator.alloc(u8, length);
             @memset(packer._inner, 0);
             packer.core = @ptrCast(packer._inner);
@@ -329,14 +347,14 @@ pub fn Packer(
             core.magic = MAGIC;
             core.version = VERSION;
             core.length = @truncate(length);
-            core.section_num = @truncate(json_sections.len);
+            core.section_num = @truncate(sectionj.len);
 
-            for (0..json_sections.len) |i| {
-                packer.sections[i] = Section.json2core(Section_T.Json, Section_T.Core, &json_sections[i]);
+            for (0..sectionj.len) |i| {
+                packer.sections[i] = Section.json2core(SectionJ, SectionC, &sectionj[i]);
             }
             return packer;
         }
-        pub fn from_header_bin(header: AnyReader, allocator: Allocator) !@This() {
+        pub fn from_header_bin(header: AnyReader, allocator: Allocator) !Self {
             const core = try header.readStruct(Core);
             if (core.magic != MAGIC) {
                 log.debug("Magic Mismatch, expect {x} but {x}", .{ MAGIC, core.magic });
@@ -347,7 +365,7 @@ pub fn Packer(
                 return error.VERSION_MISMATCH;
             }
 
-            var packer = @This(){ .allocator = allocator, .unpackable = true };
+            var packer = Self{ .allocator = allocator, .unpackable = true };
             packer._inner = try allocator.alloc(u8, core.length);
             errdefer allocator.free(packer._inner);
             packer.core = @ptrCast(packer._inner);
@@ -365,10 +383,10 @@ pub fn Packer(
             }
             return packer;
         }
-        pub fn destory(self: *const @This()) void {
+        pub fn destory(self: *const Self) void {
             self.allocator.free(self._inner);
         }
-        pub fn print(self: *const @This()) void {
+        pub fn print(self: *const Self) void {
             const core = self.core;
             log.info("Magic {x:0>8} Version {d} Length {d} SectionNum {d}", .{
                 core.magic,
@@ -377,15 +395,15 @@ pub fn Packer(
                 core.section_num,
             });
             for (0..core.section_num) |i| {
-                const section = &self.sections[i];
-                log.info("Sections[{d}] {x:0>8},{x:0>8} {s}", .{ i, section.offset, section.length, section.filename });
-                inline for (@typeInfo(Section_T.Core).@"struct".fields) |field| {
+                const sectionc = &self.sections[i];
+                log.info("Sections[{d}] {x:0>8},{x:0>8} {s}", .{ i, sectionc.offset, sectionc.length, sectionc.filename });
+                inline for (@typeInfo(SectionC).@"struct".fields) |field| {
                     if (!(std.mem.eql(u8, "filename", field.name) or std.mem.eql(u8, "offset", field.name) or std.mem.eql(u8, "length", field.name))) {
                         const info = @typeInfo(field.type);
                         if (info == .array and info.array.child == u8) {
-                            log.info("  " ++ field.name ++ " {s}", .{@field(section, field.name)});
+                            log.info("  " ++ field.name ++ " {s}", .{@field(sectionc, field.name)});
                         } else {
-                            log.info("  " ++ field.name ++ " {d}", .{@field(section, field.name)});
+                            log.info("  " ++ field.name ++ " {d}", .{@field(sectionc, field.name)});
                         }
                     }
                 }
@@ -393,24 +411,24 @@ pub fn Packer(
             log.info("Chksum is {x:0>8}", .{self.chksum.*});
         }
         pub fn pack(
-            self: *@This(),
+            self: *Self,
             from: Dir,
             header: ?AnyWriter,
             payload: ?AnyWriter,
             config: struct { prefix_header: bool = false, align_: u32 = 1, pad_byte: struct { u8, u8 } = .{ 0xf1, 0xe2 }, chunk: usize = 4096 },
         ) !void {
-            var offset: u32 = 0;
+            var offset: OffsetT = 0;
             for (0..self.core.section_num) |i| {
-                const section = &self.sections[i];
-                const f = from.openFile(std.mem.sliceTo(&section.filename, 0), .{}) catch |err| {
-                    @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ section.filename, err }));
+                const sectionc = &self.sections[i];
+                const f = from.openFile(std.mem.sliceTo(&sectionc.filename, 0), .{}) catch |err| {
+                    @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ sectionc.filename, err }));
                 };
                 defer f.close();
                 const stat = try f.stat();
-                section.offset = offset;
-                section.length = @truncate(stat.size);
-                offset += section.length;
-                offset = upAlign(u32, offset, config.align_);
+                sectionc.offset = offset;
+                sectionc.length = @truncate(stat.size);
+                offset += sectionc.length;
+                offset = upAlign(OffsetT, offset, @as(OffsetT, config.align_));
             }
             self.chksum.* = Chksum_F(self._inner[0 .. self.core.length - @sizeOf(Chksum_T)]);
             self.unpackable = true;
@@ -424,22 +442,22 @@ pub fn Packer(
                     try p.writeAll(self._inner);
                     log.debug("[payload] prefix header", .{});
                 }
-                var last_section: ?*align(1) Section_T.Core = null;
+                var last_section: ?*align(1) SectionC = null;
                 for (0..self.core.section_num) |i| {
-                    const section = &self.sections[i];
+                    const sectionc = &self.sections[i];
                     if (last_section) |last| {
-                        try p.writeByteNTimes(config.pad_byte[1], section.offset - last.offset - last.length);
+                        try p.writeByteNTimes(config.pad_byte[1], sectionc.offset - last.offset - last.length);
                     } else if (config.prefix_header) {
                         try p.writeByteNTimes(config.pad_byte[0], upAlign(u32, self.core.length, config.align_) - self.core.length);
                     }
-                    last_section = section;
+                    last_section = sectionc;
 
-                    const sub_path = std.mem.sliceTo(&section.filename, 0);
+                    const sub_path = std.mem.sliceTo(&sectionc.filename, 0);
                     const f = try from.openFile(sub_path, .{});
                     defer f.close();
 
-                    const actual = try streamCopy(f.reader().any(), p, config.chunk, section.length, self.allocator);
-                    if (actual != section.length) return error.FileSizeChanged;
+                    const actual = try streamCopy(f.reader().any(), p, config.chunk, sectionc.length, self.allocator);
+                    if (actual != sectionc.length) return error.FileSizeChanged;
 
                     var buffer: [256]u8 = undefined;
                     log.debug("[payload] pack sections[{d}] {x:0>8} bytes from {s}", .{ i, actual, try from.realpath(sub_path, &buffer) });
@@ -448,7 +466,7 @@ pub fn Packer(
             }
         }
         pub fn unpack(
-            self: *const @This(),
+            self: *const Self,
             payload: AnyReader,
             to: Dir,
             config: struct { save_header: ?AnyWriter = null, chunk: usize = 4096 },
@@ -460,20 +478,20 @@ pub fn Packer(
                 try h.writeAll(self._inner);
                 log.debug("[header] complete to write", .{});
             }
-            var last_section: ?*align(1) Section_T.Core = null;
+            var last_section: ?*align(1) SectionC = null;
             for (0..self.core.section_num) |i| {
-                const section = &self.sections[i];
+                const sectionc = &self.sections[i];
                 if (last_section) |last| {
-                    try payload.skipBytes(section.offset - last.offset - last.length, .{});
+                    try payload.skipBytes(sectionc.offset - last.offset - last.length, .{});
                 }
-                last_section = section;
+                last_section = sectionc;
 
-                const sub_path = std.mem.sliceTo(&section.filename, 0);
+                const sub_path = std.mem.sliceTo(&sectionc.filename, 0);
                 const f = try to.createFile(sub_path, .{});
                 defer f.close();
 
-                const actual = try streamCopy(payload, f.writer().any(), config.chunk, section.length, self.allocator);
-                if (actual != section.length) return error.EndOfStream;
+                const actual = try streamCopy(payload, f.writer().any(), config.chunk, sectionc.length, self.allocator);
+                if (actual != sectionc.length) return error.EndOfStream;
 
                 var buffer: [256]u8 = undefined;
                 log.debug("[payload] unpack sections[{d}] {x:0>8} bytes to {s}", .{ i, actual, try to.realpath(sub_path, &buffer) });
@@ -495,12 +513,15 @@ test "Packer from" {
         \\   }
         \\ ] 
     ;
-    comptime var section: Section = .{};
-    _ = section.ext("attr1", u32, .{ .default = 9 }).ext("attr2", []const u8, .{ .default = "bye", .length = 10 });
+    const section = Section.new()
+        .field("attr1", u32, .{ .default = 9 })
+        .field("attr2", []const u8, .{ .default = "bye", .length = 10 });
     const SimplePacker = Packer(
         0x6679_7985,
         1,
-        .{ .Json = section.Json(), .Core = section.Core(32) },
+        section,
+        32,
+        true,
         u32,
         crc32zlib_compute,
     );
@@ -510,7 +531,7 @@ test "Packer from" {
     try testing.expect(core.magic == 0x6679_7985);
     try testing.expect(core.version == 1);
     try testing.expect(core.section_num == 2);
-    try testing.expectEqualDeep(section.Core(32){
+    try testing.expectEqualDeep(section.Core(32, true){
         .filename = initArray(u8, "file0", 32),
         .attr1 = 6,
         .attr2 = initArray(u8, "bye", 10),
@@ -528,7 +549,7 @@ test "Packer from" {
     BS.reset();
     var new_packer = try SimplePacker.from_header_bin(BS.reader().any(), testing.allocator);
     defer new_packer.destory();
-    try testing.expectEqualDeep(section.Core(32){
+    try testing.expectEqualDeep(section.Core(32, true){
         .filename = initArray(u8, "file1", 32),
         .attr1 = 9,
         .attr2 = initArray(u8, "bye", 10),
