@@ -1,12 +1,12 @@
 .{
     .name = .filepacker,
     .fingerprint = 0xf5995dea499352c9,
-    .version = "0.1.3",
+    .version = "0.1.4",
     .minimum_zig_version = "0.14.0",
     .dependencies = .{
         .zargs = .{
-            .url = "https://github.com/kioz-wang/zargs/archive/refs/tags/v0.14.6.tar.gz",
-            .hash = "zargs-0.14.4-tqzWblp0AgAU8cFBdzRT1pM-UeqHQkSlp_cAh8dXjGsF",
+            .url = "https://github.com/kioz-wang/zargs/archive/refs/tags/v0.14.7.tar.gz",
+            .hash = "zargs-0.14.7-tqzWbqd1AgD7rh-6DVBPQseOuNDBiloNmUGcg71CX9Ba",
         },
     },
     .paths = .{
