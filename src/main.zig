@@ -20,6 +20,7 @@ const pack = Command.new("pack").alias("p").alias("as")
     .about("Pack a package from files")
     .arg(Arg.posArg("config", []const u8).help("Howto pack (maxsize 4096) (Try as header binary if fail to parse as json)").default("config.json"))
     .arg(Arg.optArg("from", []const u8).long("from").help("Path that find files from").default("."))
+    .arg(Arg.optArg("literal_files", []const fpkg.LiteralFile).long("file").help("Specify the content of a file").argName("(name=[content])"))
     .arg(Arg.optArg("header", ?[]const u8).long("header").help("Path of header"))
     .arg(Arg.optArg("payload", ?[]const u8).long("payload").help("Path of payload"))
     .arg(Arg.opt("prefix", bool).long("no_prefix").default(true).help("Don't prefix header to payload"))
@@ -74,7 +75,7 @@ fn actionPack(args: *pack.Result()) void {
     } else null;
     const from = cwd.openDir(args.from, .{}) catch |e| zargs.exitf(e, 1, "fail to openDir({s})", .{args.from});
 
-    packer.pack(from, header, payload, .{ .prefix_header = args.prefix, .align_ = args.@"align", .chunk = args.chunk, .pad_byte = .{ 0, 0 } }) catch |e| {
+    packer.pack(from, args.literal_files, header, payload, .{ .prefix_header = args.prefix, .align_ = args.@"align", .chunk = args.chunk, .pad_byte = .{ 0, 0 } }) catch |e| {
         zargs.exitf(e, 1, "fail to pack", .{});
     };
 }

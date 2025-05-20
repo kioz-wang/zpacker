@@ -31,6 +31,51 @@ test "Init Array" {
     try testing.expectEqualDeep(ARR, arr);
 }
 
+pub const LiteralFile = struct {
+    name: []const u8,
+    content: []const u8,
+    const Self = @This();
+    pub fn parse(s: []const u8, a: ?std.mem.Allocator) ?Self {
+        const i = std.mem.indexOf(u8, s, "=") orelse return null;
+        if (i == 0) return null;
+        const name = a.?.alloc(u8, i) catch return null;
+        const content = a.?.alloc(u8, s.len - i - 1) catch return null;
+        @memcpy(name, s[0..i]);
+        @memcpy(content, s[i + 1 ..]);
+        return .{ .name = name, .content = content };
+    }
+    pub fn destroy(self: Self, a: std.mem.Allocator) void {
+        a.free(self.name);
+        a.free(self.content);
+    }
+    pub fn find(files: []const Self, name: []const u8) ?Self {
+        for (files) |file| {
+            if (std.mem.eql(u8, file.name, name)) {
+                return file;
+            }
+        }
+        return null;
+    }
+};
+
+test "Literal Files" {
+    try testing.expectEqual(null, LiteralFile.parse("=", null));
+    try testing.expectEqual(null, LiteralFile.parse("f0", null));
+
+    const f0 = LiteralFile.parse("f0=abc", testing.allocator) orelse unreachable;
+    defer f0.destroy(testing.allocator);
+    try testing.expectEqualDeep(LiteralFile{ .name = "f0", .content = "abc" }, f0);
+
+    const f1 = LiteralFile.parse("f1=", testing.allocator) orelse unreachable;
+    defer f1.destroy(testing.allocator);
+    try testing.expectEqualDeep(LiteralFile{ .name = "f1", .content = "" }, f1);
+
+    const fs: []const LiteralFile = &.{ f0, f1 };
+    try testing.expectEqualDeep(f0, LiteralFile.find(fs, "f0"));
+    try testing.expectEqualDeep(f1, LiteralFile.find(fs, "f1"));
+    try testing.expectEqual(null, LiteralFile.find(fs, "f2"));
+}
+
 pub const Section = struct {
     const Self = @This();
     json_exts: []const StructField,
@@ -413,6 +458,7 @@ pub fn Packer(
         pub fn pack(
             self: *Self,
             from: Dir,
+            literal_files: []const LiteralFile,
             header: ?AnyWriter,
             payload: ?AnyWriter,
             config: struct { prefix_header: bool = false, align_: u32 = 1, pad_byte: struct { u8, u8 } = .{ 0xf1, 0xe2 }, chunk: usize = 4096 },
@@ -420,13 +466,21 @@ pub fn Packer(
             var offset: OffsetT = 0;
             for (0..self.core.section_num) |i| {
                 const sectionc = &self.sections[i];
-                const f = from.openFile(std.mem.sliceTo(&sectionc.filename, 0), .{}) catch |err| {
-                    @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ sectionc.filename, err }));
-                };
-                defer f.close();
-                const stat = try f.stat();
+                const name = std.mem.sliceTo(&sectionc.filename, 0);
                 sectionc.offset = offset;
-                sectionc.length = @truncate(stat.size);
+
+                const length: u64 = if (LiteralFile.find(literal_files, name)) |literal_file|
+                    literal_file.content.len
+                else blk: {
+                    const f = from.openFile(name, .{}) catch |err| {
+                        @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ sectionc.filename, err }));
+                    };
+                    defer f.close();
+                    const stat = try f.stat();
+                    break :blk stat.size;
+                };
+                sectionc.length = @intCast(length);
+
                 offset += sectionc.length;
                 offset = upAlign(OffsetT, offset, @as(OffsetT, config.align_));
             }
@@ -452,15 +506,26 @@ pub fn Packer(
                     }
                     last_section = sectionc;
 
-                    const sub_path = std.mem.sliceTo(&sectionc.filename, 0);
-                    const f = try from.openFile(sub_path, .{});
-                    defer f.close();
-
-                    const actual = try streamCopy(f.reader().any(), p, config.chunk, sectionc.length, self.allocator);
-                    if (actual != sectionc.length) return error.FileSizeChanged;
+                    const name = std.mem.sliceTo(&sectionc.filename, 0);
+                    const literal_file = LiteralFile.find(literal_files, name);
+                    if (literal_file) |lf| {
+                        var fbs = std.io.fixedBufferStream(lf.content);
+                        _ = try streamCopy(fbs.reader().any(), p, config.chunk, sectionc.length, self.allocator);
+                    } else {
+                        const f = try from.openFile(name, .{});
+                        defer f.close();
+                        const actual = try streamCopy(f.reader().any(), p, config.chunk, sectionc.length, self.allocator);
+                        if (actual != sectionc.length) return error.FileSizeChanged;
+                    }
 
                     var buffer: [256]u8 = undefined;
-                    log.debug("[payload] pack sections[{d}] {x:0>8} bytes from {s}", .{ i, actual, try from.realpath(sub_path, &buffer) });
+                    log.debug(
+                        "[payload] pack sections[{d}] {x:0>8} bytes from {s}",
+                        .{ i, sectionc.length, if (literal_file) |lf|
+                            try std.fmt.bufPrint(&buffer, "command argument about {s}", .{lf.name})
+                        else
+                            try from.realpath(name, &buffer) },
+                    );
                 }
                 log.debug("[payload] complete to pack", .{});
             }
