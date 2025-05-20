@@ -391,8 +391,8 @@ pub fn Packer(
             const core = packer.core;
             core.magic = MAGIC;
             core.version = VERSION;
-            core.length = @truncate(length);
-            core.section_num = @truncate(sectionj.len);
+            core.length = @intCast(length);
+            core.section_num = @intCast(sectionj.len);
 
             for (0..sectionj.len) |i| {
                 packer.sections[i] = Section.json2core(SectionJ, SectionC, &sectionj[i]);
