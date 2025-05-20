@@ -16,7 +16,7 @@ const show = Command.new("show").alias("s")
     .about("Show contents of package")
     .arg(Arg.posArg("input", []const u8).help("Path of package"));
 
-const pack = Command.new("pack").alias("p")
+const pack = Command.new("pack").alias("p").alias("as")
     .about("Pack a package from files")
     .arg(Arg.posArg("config", []const u8).help("Howto pack (maxsize 4096) (Try as header binary if fail to parse as json)").default("config.json"))
     .arg(Arg.optArg("from", []const u8).long("from").help("Path that find files from").default("."))
@@ -26,26 +26,21 @@ const pack = Command.new("pack").alias("p")
     .arg(Arg.optArg("chunk", usize).long("chunk").default(4 * 1024 * 1024).help("Chunk bytes per IO"))
     .arg(Arg.optArg("align", u32).long("align").default(1));
 
-const unpack = Command.new("unpack").alias("u")
+const unpack = Command.new("unpack").alias("u").alias("disa")
     .about("Unpack a package to files")
     .arg(Arg.optArg("to", []const u8).long("to").help("Path that unpack to").default("."))
     .posArg("input", []const u8, .{ .help = "Path of package" })
     .optArg("chunk", usize, .{ .long = "chunk", .default = 4 * 1024 * 1024, .help = "Chunk bytes per IO" })
     .arg(Arg.optArg("header", ?[]const u8).long("save_header").help("Save header to"));
 
-fn exit(status: u8, comptime fmt: []const u8, args: anytype) noreturn {
-    std.log.err(fmt, args);
-    std.process.exit(status);
-}
-
 fn actionShow(args: *show.Result()) void {
     const cwd = std.fs.cwd();
     const f = cwd.openFile(args.input, .{}) catch |e| {
-        exit(1, "fail to open {s} ({})", .{ args.input, e });
+        zargs.exitf(e, 1, "fail to open {s}", .{args.input});
     };
     defer f.close();
     var packer = Packer.from_header_bin(f.reader().any(), allocator) catch |e| {
-        exit(1, "fail to parse {s} ({})", .{ args.input, e });
+        zargs.exitf(e, 1, "fail to parse {s}", .{args.input});
     };
     defer packer.destory();
     packer.print();
@@ -54,55 +49,55 @@ fn actionShow(args: *show.Result()) void {
 fn actionPack(args: *pack.Result()) void {
     const cwd = std.fs.cwd();
     const f = cwd.openFile(args.config, .{}) catch |e| {
-        exit(1, "fail to open {s} ({})", .{ args.config, e });
+        zargs.exitf(e, 1, "fail to open {s}", .{args.config});
     };
     defer f.close();
     const cont = f.reader().readAllAlloc(allocator, 4096) catch |e| {
-        exit(1, "fail to read {s} ({})", .{ args.config, e });
+        zargs.exitf(e, 1, "fail to read {s}", .{args.config});
     };
     var packer = Packer.from_json_str(cont, allocator) catch |e_json| bin: {
         std.log.warn("fail to parse as json, try as header binary again ({})", .{e_json});
         f.seekTo(0) catch unreachable;
         break :bin Packer.from_header_bin(f.reader().any(), allocator) catch |e_bin| {
-            exit(1, "fail to parse {s} ({})", .{ args.config, e_bin });
+            zargs.exitf(e_bin, 1, "fail to parse {s}", .{args.config});
         };
     };
     defer packer.destory();
 
     const payload = if (args.payload) |s| blk: {
-        const p = cwd.createFile(s, .{}) catch |e| exit(1, "fail to create payload {s} ({})", .{ s, e });
+        const p = cwd.createFile(s, .{}) catch |e| zargs.exitf(e, 1, "fail to create payload {s}", .{s});
         break :blk p.writer().any();
     } else null;
     const header = if (args.header) |s| blk: {
-        const p = cwd.createFile(s, .{}) catch |e| exit(1, "fail to create header {s} ({})", .{ s, e });
+        const p = cwd.createFile(s, .{}) catch |e| zargs.exitf(e, 1, "fail to create header {s}", .{s});
         break :blk p.writer().any();
     } else null;
-    const from = cwd.openDir(args.from, .{}) catch |e| exit(1, "fail to openDir({s}) ({})", .{ args.from, e });
+    const from = cwd.openDir(args.from, .{}) catch |e| zargs.exitf(e, 1, "fail to openDir({s})", .{args.from});
 
     packer.pack(from, header, payload, .{ .prefix_header = args.prefix, .align_ = args.@"align", .chunk = args.chunk, .pad_byte = .{ 0, 0 } }) catch |e| {
-        exit(1, "fail to pack ({})", .{e});
+        zargs.exitf(e, 1, "fail to pack", .{});
     };
 }
 
 fn actionUnpack(args: *unpack.Result()) void {
     const cwd = std.fs.cwd();
     const f = cwd.openFile(args.input, .{}) catch |e| {
-        exit(1, "fail to open {s} ({})", .{ args.input, e });
+        zargs.exitf(e, 1, "fail to open {s}", .{args.input});
     };
     defer f.close();
     var packer = Packer.from_header_bin(f.reader().any(), allocator) catch |e| {
-        exit(1, "fail to parse {s} ({})", .{ args.input, e });
+        zargs.exitf(e, 1, "fail to parse {s}", .{args.input});
     };
     defer packer.destory();
 
-    const to = cwd.openDir(args.to, .{}) catch |e| exit(1, "fail to openDir({s}) ({})", .{ args.to, e });
+    const to = cwd.openDir(args.to, .{}) catch |e| zargs.exitf(e, 1, "fail to openDir({s})", .{args.to});
     const header = if (args.header) |s| blk: {
-        const p = to.createFile(s, .{}) catch |e| exit(1, "fail to create header {s} ({})", .{ s, e });
+        const p = to.createFile(s, .{}) catch |e| zargs.exitf(e, 1, "fail to create header {s}", .{s});
         break :blk p.writer().any();
     } else null;
 
     packer.unpack(f.reader().any(), to, .{ .save_header = header, .chunk = args.chunk }) catch |e| {
-        exit(1, "fail to unpack ({})", .{e});
+        zargs.exitf(e, 1, "fail to unpack", .{});
     };
 }
 
