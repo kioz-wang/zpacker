@@ -319,10 +319,9 @@ pub const crc32zlib_compute = f: {
 
 const Allocator = std.mem.Allocator;
 const Dir = std.fs.Dir;
-const AnyReader = std.io.AnyReader;
-const AnyWriter = std.io.AnyWriter;
+const File = std.fs.File;
 
-fn streamCopy(from: AnyReader, to: AnyWriter, chunk: usize, max_bytes: ?usize, allocator: std.mem.Allocator) !usize {
+fn streamCopy(from: std.io.AnyReader, to: std.io.AnyWriter, chunk: usize, max_bytes: ?usize, allocator: std.mem.Allocator) !usize {
     const buffer = try allocator.alloc(u8, chunk);
     defer allocator.free(buffer);
     var expect: usize = chunk;
@@ -347,60 +346,154 @@ fn streamCopy(from: AnyReader, to: AnyWriter, chunk: usize, max_bytes: ?usize, a
 
 const log = std.log.scoped(.packer);
 
+pub const DigestType = enum(u8) {
+    sha256,
+    sha1,
+    md5,
+    pub fn length(self: @This()) usize {
+        const hash = std.crypto.hash;
+        return switch (self) {
+            .sha1 => hash.Sha1.digest_length,
+            .sha256 => hash.sha2.Sha256.digest_length,
+            .md5 => hash.Md5.digest_length,
+        };
+    }
+};
+
+const Digest = union(DigestType) {
+    const Self = @This();
+    const hash = std.crypto.hash;
+    sha256: hash.sha2.Sha256,
+    sha1: hash.Sha1,
+    md5: hash.Md5,
+
+    fn compute(digest_type: DigestType, data: []const u8, out: []u8) void {
+        if (out.len < digest_type.length()) unreachable;
+        switch (digest_type) {
+            .sha1 => hash.Sha1.hash(data, @ptrCast(out), .{}),
+            .sha256 => hash.sha2.Sha256.hash(data, @ptrCast(out), .{}),
+            .md5 => hash.Md5.hash(data, @ptrCast(out), .{}),
+        }
+    }
+
+    fn init(digest_type: DigestType) Self {
+        return switch (digest_type) {
+            .sha1 => .{ .sha1 = hash.Sha1.init(.{}) },
+            .sha256 => .{ .sha256 = hash.sha2.Sha256.init(.{}) },
+            .md5 => .{ .md5 = hash.Md5.init(.{}) },
+        };
+    }
+    fn update(self: *Self, data: []const u8) void {
+        switch (self.*) {
+            inline .sha1, .sha256, .md5 => |*h| h.update(data),
+        }
+    }
+    fn final(self: *Self, out: []u8) void {
+        if (out.len < DigestType.length(self.*)) unreachable;
+        switch (self.*) {
+            inline .sha1, .sha256, .md5 => |*h| h.final(@ptrCast(out)),
+        }
+    }
+    fn finalCheck(self: *Self, data: []const u8, allocator: Allocator) !bool {
+        const length = DigestType.length(self.*);
+        if (data.len < length) unreachable;
+        const buffer = try allocator.alloc(u8, length);
+        defer allocator.free(buffer);
+        self.final(buffer);
+        return std.mem.eql(u8, data[0..length], buffer);
+    }
+
+    pub const Error = error{};
+    pub const Writer = std.io.Writer(*Self, Error, write);
+    fn write(self: *Self, bytes: []const u8) Error!usize {
+        self.update(bytes);
+        return bytes.len;
+    }
+    pub fn writer(self: *Self) Writer {
+        return .{ .context = self };
+    }
+};
+
 pub fn Packer(
     MAGIC: comptime_int,
     VERSION: comptime_int,
-    section: Section,
+    section_: Section,
     FN_MAXSIZE: comptime_int,
     big_file: bool,
     Chksum_T: type,
     Chksum_F: fn ([]const u8) Chksum_T,
 ) type {
+    const DIGEST_MAX_LENGTH = DigestType.sha256.length();
+
     const Core = extern struct {
         magic: u32 = MAGIC,
         version: u32 = VERSION,
-        length: u32 = undefined,
-        section_num: u32 = undefined,
+        length: u32,
+        section_num: u32,
+        digest: [DIGEST_MAX_LENGTH]u8 = std.mem.zeroes([DIGEST_MAX_LENGTH]u8),
+        digest_type: DigestType,
+        resv: [3]u8 = std.mem.zeroes([3]u8),
+        align32: u32 = 1,
     };
-    const SectionJ = section.Json();
-    const SectionC = section.Core(FN_MAXSIZE, big_file);
+    const SectionJ = section_.Json();
+    const SectionC = section_.Core(FN_MAXSIZE, big_file);
     const OffsetT = if (big_file) u64 else u32;
 
     return struct {
         const Self = @This();
-        core: *align(1) Core = undefined,
-        sections: [*]align(1) SectionC = undefined,
-        chksum: *align(1) Chksum_T = undefined,
-        _inner: []u8 = undefined,
+        core: *align(1) Core,
+        sections: []align(1) SectionC,
+        padding: []align(1) u8,
+        chksum: *align(1) Chksum_T,
+
+        inner: []u8,
         allocator: Allocator,
         unpackable: bool = false,
 
-        pub fn from_json_str(json_str: []const u8, allocator: Allocator) !Self {
+        fn alloc(core: *const Core, allocator: Allocator) !Self {
+            const length = @sizeOf(Core) + @sizeOf(SectionC) * core.section_num;
+            const padding_size = core.length - length - @sizeOf(Chksum_T);
+
+            var buffer = try allocator.alloc(u8, core.length);
+            errdefer allocator.free(buffer);
+
+            const self = Self{
+                .inner = buffer,
+                .allocator = allocator,
+                .core = @ptrCast(buffer),
+                .sections = @as([*]align(1) SectionC, @ptrCast(&buffer[@sizeOf(Core)]))[0..core.section_num],
+                .padding = @as([*]u8, @ptrCast(&buffer[length]))[0..padding_size],
+                .chksum = @ptrCast(&buffer[core.length - @sizeOf(Chksum_T)]),
+            };
+            self.core.* = core.*;
+            return self;
+        }
+        pub fn from_json_str(
+            json_str: []const u8,
+            allocator: Allocator,
+            config: struct { digest_type: DigestType, align32: u32 = 1, pad_byte: u8 = 0xf1 },
+        ) !Self {
             const parsed = try std.json.parseFromSlice([]SectionJ, allocator, json_str, .{});
             defer parsed.deinit();
-            const sectionj = parsed.value;
+            const sectionjs = parsed.value;
 
-            var packer = Self{ .allocator = allocator };
-            const length = @sizeOf(Core) + @sizeOf(SectionC) * sectionj.len + @sizeOf(Chksum_T);
-            packer._inner = try allocator.alloc(u8, length);
-            @memset(packer._inner, 0);
-            packer.core = @ptrCast(packer._inner);
-            packer.sections = @ptrCast(&packer._inner[@sizeOf(Core)]);
-            packer.chksum = @ptrCast(&packer._inner[length - @sizeOf(Chksum_T)]);
+            if (config.align32 == 0) unreachable;
+            const core = Core{
+                .length = @intCast(upAlign(usize, @sizeOf(Core) + @sizeOf(SectionC) * sectionjs.len + @sizeOf(Chksum_T), config.align32)),
+                .section_num = @intCast(sectionjs.len),
+                .digest_type = config.digest_type,
+                .align32 = config.align32,
+            };
+            const self = try Self.alloc(&core, allocator);
+            @memset(self.padding, config.pad_byte);
 
-            const core = packer.core;
-            core.magic = MAGIC;
-            core.version = VERSION;
-            core.length = @intCast(length);
-            core.section_num = @intCast(sectionj.len);
-
-            for (0..sectionj.len) |i| {
-                packer.sections[i] = Section.json2core(SectionJ, SectionC, &sectionj[i]);
+            for (self.sections, sectionjs) |*section, sectionj| {
+                section.* = Section.json2core(SectionJ, SectionC, &sectionj);
             }
-            return packer;
+            return self;
         }
-        pub fn from_header_bin(header: AnyReader, allocator: Allocator) !Self {
-            const core = try header.readStruct(Core);
+        pub fn from_header_bin(header: File, allocator: Allocator) !Self {
+            const core = try header.reader().readStruct(Core);
             if (core.magic != MAGIC) {
                 log.debug("Magic Mismatch, expect {x} but {x}", .{ MAGIC, core.magic });
                 return error.MAGIC_MISMATCH;
@@ -410,26 +503,21 @@ pub fn Packer(
                 return error.VERSION_MISMATCH;
             }
 
-            var packer = Self{ .allocator = allocator, .unpackable = true };
-            packer._inner = try allocator.alloc(u8, core.length);
-            errdefer allocator.free(packer._inner);
-            packer.core = @ptrCast(packer._inner);
-            packer.sections = @ptrCast(&packer._inner[@sizeOf(Core)]);
-            packer.chksum = @ptrCast(&packer._inner[core.length - @sizeOf(Chksum_T)]);
+            var self = try Self.alloc(&core, allocator);
+            self.unpackable = true;
 
-            packer.core.* = core;
-            if (try header.readAll(packer._inner[@sizeOf(Core)..]) != core.length - @sizeOf(Core)) {
+            if (try header.readAll(self.inner[@sizeOf(Core)..]) != core.length - @sizeOf(Core)) {
                 return error.EndOfStream;
             }
-            const chksum = Chksum_F(packer._inner[0 .. core.length - @sizeOf(Chksum_T)]);
-            if (packer.chksum.* != chksum) {
-                log.debug("Chksum Mismatch, expect {x} but {x}", .{ packer.chksum.*, chksum });
+            const chksum = Chksum_F(self.inner[0 .. core.length - @sizeOf(Chksum_T)]);
+            if (self.chksum.* != chksum) {
+                log.debug("Chksum Mismatch, expect {x} but {x}", .{ self.chksum.*, chksum });
                 return error.CHKSUM_MISMATCH;
             }
-            return packer;
+            return self;
         }
         pub fn destory(self: *const Self) void {
-            self.allocator.free(self._inner);
+            self.allocator.free(self.inner);
         }
         pub fn print(self: *const Self) void {
             const core = self.core;
@@ -439,19 +527,27 @@ pub fn Packer(
                 core.length,
                 core.section_num,
             });
-            for (0..core.section_num) |i| {
-                const sectionc = &self.sections[i];
-                log.info("Sections[{d}] {x:0>8},{x:0>8} {s}", .{ i, sectionc.offset, sectionc.length, sectionc.filename });
-                inline for (@typeInfo(SectionC).@"struct".fields) |field| {
+            log.info("{s} = {s}", .{
+                @tagName(core.digest_type),
+                std.fmt.fmtSliceHexUpper(core.digest[0..core.digest_type.length()]),
+            });
+            for (self.sections, 0..) |section, i| {
+                log.info("Sections[{d}] {x:0>8},{x:0>8} {s}", .{ i, section.offset, section.length, section.filename });
+                inline for (std.meta.fields(SectionC)) |field| {
                     if (!(std.mem.eql(u8, "filename", field.name) or std.mem.eql(u8, "offset", field.name) or std.mem.eql(u8, "length", field.name))) {
                         const info = @typeInfo(field.type);
                         if (info == .array and info.array.child == u8) {
-                            log.info("  " ++ field.name ++ " {s}", .{@field(sectionc, field.name)});
+                            log.info("  " ++ field.name ++ " {s}", .{@field(section, field.name)});
                         } else {
-                            log.info("  " ++ field.name ++ " {d}", .{@field(sectionc, field.name)});
+                            log.info("  " ++ field.name ++ " {d}", .{@field(section, field.name)});
                         }
                     }
                 }
+            }
+            if (self.padding.len == 0) {
+                log.info("Align {x}", .{core.align32});
+            } else {
+                log.info("Align {x} Padding {x:02}", .{ core.align32, self.padding[0] });
             }
             log.info("Chksum is {x:0>8}", .{self.chksum.*});
         }
@@ -459,109 +555,130 @@ pub fn Packer(
             self: *Self,
             from: Dir,
             literal_files: []const LiteralFile,
-            header: ?AnyWriter,
-            payload: ?AnyWriter,
-            config: struct { prefix_header: bool = false, align_: u32 = 1, pad_byte: struct { u8, u8 } = .{ 0xf1, 0xe2 }, chunk: usize = 4096 },
+            header: ?File,
+            payload: File,
+            config: struct { prefix_header: bool = false, chunk: usize = 4096 },
         ) !void {
             var offset: OffsetT = 0;
-            for (0..self.core.section_num) |i| {
-                const sectionc = &self.sections[i];
-                const name = std.mem.sliceTo(&sectionc.filename, 0);
-                sectionc.offset = offset;
+            for (self.sections) |*section| {
+                const name = std.mem.sliceTo(&section.filename, 0);
+                section.offset = offset;
 
-                const length: u64 = if (LiteralFile.find(literal_files, name)) |literal_file|
-                    literal_file.content.len
+                const length: u64 = if (LiteralFile.find(literal_files, name)) |lf|
+                    lf.content.len
                 else blk: {
                     const f = from.openFile(name, .{}) catch |err| {
-                        @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ sectionc.filename, err }));
+                        @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ section.filename, err }));
                     };
                     defer f.close();
                     const stat = try f.stat();
                     break :blk stat.size;
                 };
-                sectionc.length = @intCast(length);
+                section.length = @intCast(length);
 
-                offset += sectionc.length;
-                offset = upAlign(OffsetT, offset, @as(OffsetT, config.align_));
+                offset += section.length;
+                offset = upAlign(OffsetT, offset, @as(OffsetT, self.core.align32));
             }
-            self.chksum.* = Chksum_F(self._inner[0 .. self.core.length - @sizeOf(Chksum_T)]);
+
+            if (config.prefix_header) {
+                try payload.seekTo(self.core.length);
+            }
+
+            var digest = Digest.init(self.core.digest_type);
+            var multiWriter = std.io.multiWriter(.{ digest.writer(), payload.writer() });
+            const stream = multiWriter.writer();
+
+            var last_section: ?*align(1) SectionC = null;
+            for (self.sections, 0..) |*section, i| {
+                if (last_section) |last| {
+                    const padding_size = section.offset - last.offset - last.length;
+                    if (padding_size != 0) {
+                        try stream.writeByteNTimes(self.padding[0], padding_size);
+                    }
+                }
+                last_section = section;
+
+                const name = std.mem.sliceTo(&section.filename, 0);
+                const literal_file = LiteralFile.find(literal_files, name);
+                if (literal_file) |lf| {
+                    var fbs = std.io.fixedBufferStream(lf.content);
+                    _ = try streamCopy(fbs.reader().any(), stream.any(), config.chunk, section.length, self.allocator);
+                } else {
+                    const f = try from.openFile(name, .{});
+                    defer f.close();
+                    const actual = try streamCopy(f.reader().any(), stream.any(), config.chunk, section.length, self.allocator);
+                    if (actual != section.length) return error.FileSizeChanged;
+                }
+
+                var buffer: [256]u8 = undefined;
+                log.debug(
+                    "[payload] pack sections[{d}] {x:0>8} bytes from {s}",
+                    .{ i, section.length, if (literal_file) |lf|
+                        try std.fmt.bufPrint(&buffer, "command argument about {s}", .{lf.name})
+                    else
+                        try from.realpath(name, &buffer) },
+                );
+            }
+
+            digest.final(&self.core.digest);
+            self.chksum.* = Chksum_F(self.inner[0 .. self.core.length - @sizeOf(Chksum_T)]);
             self.unpackable = true;
             self.print();
+
             if (header) |h| {
-                try h.writeAll(self._inner);
+                try h.writeAll(self.inner);
                 log.debug("[header] complete to write", .{});
             }
-            if (payload) |p| {
-                if (config.prefix_header) {
-                    try p.writeAll(self._inner);
-                    log.debug("[payload] prefix header", .{});
-                }
-                var last_section: ?*align(1) SectionC = null;
-                for (0..self.core.section_num) |i| {
-                    const sectionc = &self.sections[i];
-                    if (last_section) |last| {
-                        try p.writeByteNTimes(config.pad_byte[1], sectionc.offset - last.offset - last.length);
-                    } else if (config.prefix_header) {
-                        try p.writeByteNTimes(config.pad_byte[0], upAlign(u32, self.core.length, config.align_) - self.core.length);
-                    }
-                    last_section = sectionc;
 
-                    const name = std.mem.sliceTo(&sectionc.filename, 0);
-                    const literal_file = LiteralFile.find(literal_files, name);
-                    if (literal_file) |lf| {
-                        var fbs = std.io.fixedBufferStream(lf.content);
-                        _ = try streamCopy(fbs.reader().any(), p, config.chunk, sectionc.length, self.allocator);
-                    } else {
-                        const f = try from.openFile(name, .{});
-                        defer f.close();
-                        const actual = try streamCopy(f.reader().any(), p, config.chunk, sectionc.length, self.allocator);
-                        if (actual != sectionc.length) return error.FileSizeChanged;
-                    }
-
-                    var buffer: [256]u8 = undefined;
-                    log.debug(
-                        "[payload] pack sections[{d}] {x:0>8} bytes from {s}",
-                        .{ i, sectionc.length, if (literal_file) |lf|
-                            try std.fmt.bufPrint(&buffer, "command argument about {s}", .{lf.name})
-                        else
-                            try from.realpath(name, &buffer) },
-                    );
-                }
-                log.debug("[payload] complete to pack", .{});
+            if (config.prefix_header) {
+                try payload.seekTo(0);
+                try payload.writeAll(self.inner);
+                log.debug("[payload] prefix header", .{});
             }
+            log.debug("[payload] complete to pack", .{});
         }
         pub fn unpack(
             self: *const Self,
-            payload: AnyReader,
+            payload: File,
             to: Dir,
-            config: struct { save_header: ?AnyWriter = null, chunk: usize = 4096 },
+            config: struct { save_header: ?File = null, chunk: usize = 4096 },
         ) !void {
             if (!self.unpackable) {
                 return error.Unsupported;
             }
             if (config.save_header) |h| {
-                try h.writeAll(self._inner);
+                try h.writeAll(self.inner);
                 log.debug("[header] complete to write", .{});
             }
-            var last_section: ?*align(1) SectionC = null;
-            for (0..self.core.section_num) |i| {
-                const sectionc = &self.sections[i];
-                if (last_section) |last| {
-                    try payload.skipBytes(sectionc.offset - last.offset - last.length, .{});
-                }
-                last_section = sectionc;
 
-                const sub_path = std.mem.sliceTo(&sectionc.filename, 0);
-                const f = try to.createFile(sub_path, .{});
+            var digest = Digest.init(self.core.digest_type);
+
+            var last_section: ?*align(1) SectionC = null;
+            for (self.sections, 0..) |*section, i| {
+                if (last_section) |last| {
+                    const padding_size = section.offset - last.offset - last.length;
+                    const actual = try streamCopy(payload.reader().any(), digest.writer().any(), config.chunk, padding_size, self.allocator);
+                    if (actual != padding_size) return error.EndOfStream;
+                }
+                last_section = section;
+
+                const name = std.mem.sliceTo(&section.filename, 0);
+                const f = try to.createFile(name, .{});
                 defer f.close();
 
-                const actual = try streamCopy(payload, f.writer().any(), config.chunk, sectionc.length, self.allocator);
-                if (actual != sectionc.length) return error.EndOfStream;
+                var multiWriter = std.io.multiWriter(.{ digest.writer(), f.writer() });
+                const stream = multiWriter.writer();
+                const actual = try streamCopy(payload.reader().any(), stream.any(), config.chunk, section.length, self.allocator);
+                if (actual != section.length) return error.EndOfStream;
 
                 var buffer: [256]u8 = undefined;
-                log.debug("[payload] unpack sections[{d}] {x:0>8} bytes to {s}", .{ i, actual, try to.realpath(sub_path, &buffer) });
+                log.debug("[payload] unpack sections[{d}] {x:0>8} bytes to {s}", .{ i, actual, try to.realpath(name, &buffer) });
             }
             log.debug("[payload] complete to unpack", .{});
+
+            if (!try digest.finalCheck(&self.core.digest, self.allocator)) {
+                log.warn("[payload] digest mismatch", .{});
+            }
         }
     };
 }
@@ -602,15 +719,15 @@ test "Packer from" {
         .attr2 = initArray(u8, "bye", 10),
     }, packer.sections[0]);
 
-    var BS = std.io.fixedBufferStream(packer._inner);
-    var BadBS = std.io.fixedBufferStream(packer._inner[0 .. packer._inner.len - 5]);
+    var BS = std.io.fixedBufferStream(packer.inner);
+    var BadBS = std.io.fixedBufferStream(packer.inner[0 .. packer.inner.len - 5]);
 
     try testing.expectError(error.CHKSUM_MISMATCH, SimplePacker.from_header_bin(BS.reader().any(), testing.allocator));
     try testing.expectError(error.EndOfStream, SimplePacker.from_header_bin(BadBS.reader().any(), testing.allocator));
 
     try testing.expectError(error.Unsupported, packer.unpack(BS.reader().any(), std.fs.cwd(), .{}));
 
-    packer.chksum.* = (Crc32Zlib{}).compute(packer._inner[0 .. packer.core.length - @sizeOf(u32)]);
+    packer.chksum.* = (Crc32Zlib{}).compute(packer.inner[0 .. packer.core.length - @sizeOf(u32)]);
     BS.reset();
     var new_packer = try SimplePacker.from_header_bin(BS.reader().any(), testing.allocator);
     defer new_packer.destory();
