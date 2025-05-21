@@ -531,7 +531,7 @@ pub fn Packer(
                 @tagName(core.digest_type),
                 std.fmt.fmtSliceHexUpper(core.digest[0..core.digest_type.length()]),
             });
-            for (self.sections, 0..) |section, i| {
+            for (self.sections, 0..) |*section, i| {
                 log.info("Sections[{d}] {x:0>8},{x:0>8} {s}", .{ i, section.offset, section.length, section.filename });
                 inline for (std.meta.fields(SectionC)) |field| {
                     if (!(std.mem.eql(u8, "filename", field.name) or std.mem.eql(u8, "offset", field.name) or std.mem.eql(u8, "length", field.name))) {
@@ -547,9 +547,13 @@ pub fn Packer(
             if (self.padding.len == 0) {
                 log.info("Align {x}", .{core.align32});
             } else {
-                log.info("Align {x} Padding {x:02}", .{ core.align32, self.padding[0] });
+                log.info("Align {x} Pad Byte {x:02}", .{ core.align32, self.padding[0] });
             }
             log.info("Chksum is {x:0>8}", .{self.chksum.*});
+
+            const last = &self.sections[self.sections.len - 1];
+            const payload_size = last.offset + upAlign(OffsetT, last.length, core.align32);
+            log.info("Payload Size {x:0>8} Package Size {x:0>8}", .{ payload_size, payload_size + core.length });
         }
         pub fn pack(
             self: *Self,
