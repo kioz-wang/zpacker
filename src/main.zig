@@ -127,7 +127,7 @@ fn actionUnpack(args: *unpack.Result()) void {
 }
 
 const app = Command.new("filepacker").requireSub("action")
-    .version("0.2.0").author("Kioz Wang")
+    .version("0.2.1").author("Kioz Wang")
     .sub(show.callBack(actionShow))
     .sub(pack.callBack(actionPack))
     .sub(unpack.callBack(actionUnpack));

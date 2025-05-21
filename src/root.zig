@@ -437,7 +437,7 @@ pub fn Packer(
     };
     const SectionJ = section_.Json();
     const SectionC = section_.Core(FN_MAXSIZE, big_file);
-    const OffsetT = if (big_file) u64 else u32;
+    const OffsetT = @FieldType(SectionC, "offset");
 
     return struct {
         const Self = @This();
@@ -576,8 +576,7 @@ pub fn Packer(
                 };
                 section.length = @intCast(length);
 
-                offset += section.length;
-                offset = upAlign(OffsetT, offset, @as(OffsetT, self.core.align32));
+                offset += upAlign(OffsetT, section.length, self.core.align32);
             }
 
             if (config.prefix_header) {
@@ -588,16 +587,7 @@ pub fn Packer(
             var multiWriter = std.io.multiWriter(.{ digest.writer(), payload.writer() });
             const stream = multiWriter.writer();
 
-            var last_section: ?*align(1) SectionC = null;
             for (self.sections, 0..) |*section, i| {
-                if (last_section) |last| {
-                    const padding_size = section.offset - last.offset - last.length;
-                    if (padding_size != 0) {
-                        try stream.writeByteNTimes(self.padding[0], padding_size);
-                    }
-                }
-                last_section = section;
-
                 const name = std.mem.sliceTo(&section.filename, 0);
                 const literal_file = LiteralFile.find(literal_files, name);
                 if (literal_file) |lf| {
@@ -608,6 +598,11 @@ pub fn Packer(
                     defer f.close();
                     const actual = try streamCopy(f.reader().any(), stream.any(), config.chunk, section.length, self.allocator);
                     if (actual != section.length) return error.FileSizeChanged;
+                }
+
+                const padding_size = upAlign(OffsetT, section.length, self.core.align32) - section.length;
+                if (padding_size != 0) {
+                    try stream.writeByteNTimes(self.padding[0], padding_size);
                 }
 
                 var buffer: [256]u8 = undefined;
@@ -653,15 +648,7 @@ pub fn Packer(
 
             var digest = Digest.init(self.core.digest_type);
 
-            var last_section: ?*align(1) SectionC = null;
             for (self.sections, 0..) |*section, i| {
-                if (last_section) |last| {
-                    const padding_size = section.offset - last.offset - last.length;
-                    const actual = try streamCopy(payload.reader().any(), digest.writer().any(), config.chunk, padding_size, self.allocator);
-                    if (actual != padding_size) return error.EndOfStream;
-                }
-                last_section = section;
-
                 const name = std.mem.sliceTo(&section.filename, 0);
                 const f = try to.createFile(name, .{});
                 defer f.close();
@@ -670,6 +657,10 @@ pub fn Packer(
                 const stream = multiWriter.writer();
                 const actual = try streamCopy(payload.reader().any(), stream.any(), config.chunk, section.length, self.allocator);
                 if (actual != section.length) return error.EndOfStream;
+
+                const padding_size = upAlign(OffsetT, section.length, self.core.align32) - section.length;
+                const skip = try streamCopy(payload.reader().any(), digest.writer().any(), config.chunk, padding_size, self.allocator);
+                if (skip != padding_size) return error.EndOfStream;
 
                 var buffer: [256]u8 = undefined;
                 log.debug("[payload] unpack sections[{d}] {x:0>8} bytes to {s}", .{ i, actual, try to.realpath(name, &buffer) });
