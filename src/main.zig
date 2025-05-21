@@ -1,5 +1,5 @@
 const std = @import("std");
-const fpkg = @import("root.zig");
+const zpacker = @import("zpacker");
 const zargs = @import("zargs");
 const Command = zargs.Command;
 const Arg = zargs.Arg;
@@ -8,10 +8,10 @@ const Ranges = zargs.Ranges;
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
 
-const section = fpkg.Section.new()
+const section = zpacker.Section.new()
     .field("attr1", u16, .{ .default = 6 })
     .field("attr2", []const u8, .{ .default = "bye", .length = 6 });
-const Packer = fpkg.Packer(0x6679_7985, 1, section, 16, false, u32, fpkg.crc32zlib_compute);
+const Packer = zpacker.Packer(0x6679_7985, 1, section, 16, false, u32, zpacker.crc32zlib_compute);
 
 const show = Command.new("show").alias("s")
     .about("Show contents of package")
@@ -21,14 +21,14 @@ const pack = Command.new("pack").alias("p").alias("as")
     .about("Pack a package from files")
     .arg(Arg.posArg("config", []const u8).help("Howto pack (maxsize 4096) (Try as header binary if fail to parse as json)").default("config.json"))
     .arg(Arg.optArg("from", []const u8).long("from").help("Path that find files from").default("."))
-    .arg(Arg.optArg("literal_files", []const fpkg.LiteralFile).long("file").help("Specify the content of a file").argName("(name=[content])"))
+    .arg(Arg.optArg("literal_files", []const zpacker.LiteralFile).long("file").help("Specify the content of a file").argName("(name=[content])"))
     .arg(Arg.optArg("header", ?[]const u8).long("header").help("Path of header"))
     .arg(Arg.optArg("payload", []const u8).long("payload").help("Path of payload"))
     .arg(Arg.opt("prefix", bool).long("no_prefix").default(true).help("Don't prefix header to payload"))
     .arg(Arg.optArg("chunk", usize).long("chunk").default(4 * 1024 * 1024).help("Chunk bytes per IO"))
     .arg(Arg.optArg("align", u32).long("align").default(1).ranges(Ranges(u32).new().u(1, null)))
     .arg(Arg.optArg("pad_byte", u8).long("pad_byte").default(0).help("Fill when {ALIGN} > 1"))
-    .arg(Arg.optArg("digest_type", fpkg.DigestType).long("digest"));
+    .arg(Arg.optArg("digest_type", zpacker.DigestType).long("digest"));
 
 const unpack = Command.new("unpack").alias("u").alias("disa")
     .about("Unpack a package to files")
@@ -126,7 +126,7 @@ fn actionUnpack(args: *unpack.Result()) void {
     };
 }
 
-const app = Command.new("filepacker").requireSub("action")
+const app = Command.new("zpacker").requireSub("action")
     .version("0.2.1").author("Kioz Wang")
     .sub(show.callBack(actionShow))
     .sub(pack.callBack(actionPack))
