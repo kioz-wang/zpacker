@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("zpacker", lib);
     exe.root_module.addImport("zargs", b.dependency("zargs", .{}).module("zargs"));
+    exe.root_module.addImport("ztype", b.dependency("zargs", .{}).module("ztype"));
 
     b.installArtifact(exe);
     const run_cmd = b.addRunArtifact(exe);

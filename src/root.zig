@@ -35,18 +35,18 @@ pub const LiteralFile = struct {
     name: []const u8,
     content: []const u8,
     const Self = @This();
-    pub fn parse(s: []const u8, a: ?std.mem.Allocator) ?Self {
+    pub fn parse(s: []const u8, a_maybe: ?std.mem.Allocator) ?Self {
         const i = std.mem.indexOf(u8, s, "=") orelse return null;
         if (i == 0) return null;
-        const name = a.?.alloc(u8, i) catch return null;
-        const content = a.?.alloc(u8, s.len - i - 1) catch return null;
+        const name = a_maybe.?.alloc(u8, i) catch return null;
+        const content = a_maybe.?.alloc(u8, s.len - i - 1) catch return null;
         @memcpy(name, s[0..i]);
         @memcpy(content, s[i + 1 ..]);
         return .{ .name = name, .content = content };
     }
-    pub fn destroy(self: Self, a: std.mem.Allocator) void {
-        a.free(self.name);
-        a.free(self.content);
+    pub fn destroy(self: *Self, a_maybe: ?std.mem.Allocator) void {
+        a_maybe.?.free(self.name);
+        a_maybe.?.free(self.content);
     }
     pub fn find(files: []const Self, name: []const u8) ?Self {
         for (files) |file| {
@@ -557,13 +557,15 @@ pub fn Packer(
         }
         pub fn pack(
             self: *Self,
-            from: Dir,
+            froms: []const Dir,
             literal_files: []const LiteralFile,
             header: ?File,
             payload: File,
             config: struct { prefix_header: bool = false, chunk: usize = 4096 },
         ) !void {
             var offset: OffsetT = 0;
+            var found = std.StringHashMap(Dir).init(self.allocator);
+            defer found.deinit();
             for (self.sections) |*section| {
                 const name = std.mem.sliceTo(&section.filename, 0);
                 section.offset = offset;
@@ -571,12 +573,19 @@ pub fn Packer(
                 const length: u64 = if (LiteralFile.find(literal_files, name)) |lf|
                     lf.content.len
                 else blk: {
-                    const f = from.openFile(name, .{}) catch |err| {
-                        @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ section.filename, err }));
-                    };
-                    defer f.close();
-                    const stat = try f.stat();
-                    break :blk stat.size;
+                    for (froms) |from| {
+                        const f = from.openFile(name, .{}) catch |err| {
+                            if (err == File.OpenError.FileNotFound) {
+                                continue;
+                            }
+                            @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ section.filename, err }));
+                        };
+                        defer f.close();
+                        try found.put(name, from);
+                        const stat = try f.stat();
+                        break :blk stat.size;
+                    }
+                    @panic(try std.fmt.allocPrint(self.allocator, "not found {s} anywhere", .{section.filename}));
                 };
                 section.length = @intCast(length);
 
@@ -598,7 +607,7 @@ pub fn Packer(
                     var fbs = std.io.fixedBufferStream(lf.content);
                     _ = try streamCopy(fbs.reader().any(), stream.any(), config.chunk, section.length, self.allocator);
                 } else {
-                    const f = try from.openFile(name, .{});
+                    const f = try (found.get(name).?).openFile(name, .{});
                     defer f.close();
                     const actual = try streamCopy(f.reader().any(), stream.any(), config.chunk, section.length, self.allocator);
                     if (actual != section.length) return error.FileSizeChanged;
@@ -615,7 +624,7 @@ pub fn Packer(
                     .{ i, section.length, if (literal_file) |lf|
                         try std.fmt.bufPrint(&buffer, "command argument about {s}", .{lf.name})
                     else
-                        try from.realpath(name, &buffer) },
+                        try (found.get(name).?).realpath(name, &buffer) },
                 );
             }
 
