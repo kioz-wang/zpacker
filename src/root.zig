@@ -578,14 +578,16 @@ pub fn Packer(
                             if (err == File.OpenError.FileNotFound) {
                                 continue;
                             }
-                            @panic(try std.fmt.allocPrint(self.allocator, "fail at openFile({s}) ({any})", .{ section.filename, err }));
+                            log.debug("[payload] fail at openFile({s}) ({any})", .{ section.filename, err });
+                            return error.FileOpenErr;
                         };
                         defer f.close();
                         try found.put(name, from);
                         const stat = try f.stat();
                         break :blk stat.size;
                     }
-                    @panic(try std.fmt.allocPrint(self.allocator, "not found {s} anywhere", .{section.filename}));
+                    log.debug("[payload] not found {s} anywhere", .{section.filename});
+                    return error.FileNotFound;
                 };
                 section.length = @intCast(length);
 

@@ -7,6 +7,7 @@ const Ranges = zargs.Ranges;
 const ztype = @import("ztype");
 const String = ztype.String;
 const Open = ztype.Open;
+const OpenLazy = ztype.OpenLazy;
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 const allocator = gpa.allocator();
@@ -25,8 +26,8 @@ const pack = Command.new("pack").alias("p").alias("as")
     .arg(Arg.posArg("config", Open(.file, .{})).help("Howto pack (maxsize 4096) (Try as header binary if fail to parse as json)").rawDefault("config.json"))
     .arg(Arg.optArg("froms", []Open(.dir, .{})).long("from").argName("DIR").help("Path that find files from"))
     .arg(Arg.optArg("literal_files", []zpacker.LiteralFile).long("file").help("Specify the content of a file").argName("(name=[content])"))
-    .arg(Arg.optArg("header", ?Open(.fileCreate, .{})).long("header").help("Path of header"))
-    .arg(Arg.optArg("payload", Open(.fileCreate, .{})).long("payload").help("Path of payload"))
+    .arg(Arg.optArg("header", ?OpenLazy(.fileCreate, .{})).long("header").help("Path of header"))
+    .arg(Arg.optArg("payload", OpenLazy(.fileCreate, .{})).long("payload").help("Path of payload"))
     .arg(Arg.opt("prefix", bool).long("no_prefix").default(true).help("Don't prefix header to payload"))
     .arg(Arg.optArg("chunk", usize).long("chunk").default(4 * 1024 * 1024).help("Chunk bytes per IO"))
     .arg(Arg.optArg("align", u32).long("align").default(1).ranges(Ranges(u32).new().u(1, null)))
@@ -87,10 +88,12 @@ fn actionPack(args: *pack.Result()) void {
     packer.pack(
         froms,
         args.literal_files,
-        if (args.header) |h| h.v else null,
-        args.payload.v,
+        if (args.header) |*h| h.unlazy() catch |e| zargs.exit(e, 1) else null,
+        args.payload.unlazy() catch |e| zargs.exit(e, 1),
         .{ .prefix_header = args.prefix, .chunk = args.chunk },
     ) catch |e| {
+        if (args.header) |h| std.fs.cwd().deleteFile(h.s) catch {};
+        std.fs.cwd().deleteFile(args.payload.s) catch {};
         zargs.exitf(e, 1, "fail to pack", .{});
     };
 }
