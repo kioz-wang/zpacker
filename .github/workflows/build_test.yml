@@ -1,0 +1,57 @@
+name: Build and test all
+
+on:
+  pull_request:
+    branches: ["main"]
+
+  push:
+    branches:
+      - ci-test/*
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          [
+            x86_64-linux,
+            aarch64-linux,
+            x86_64-macos,
+            aarch64-macos,
+            x86_64-windows,
+          ]
+        include:
+          - target: x86_64-linux
+            runs-on: ubuntu-latest
+          - target: aarch64-linux
+            runs-on: ubuntu-24.04-arm
+          - target: x86_64-macos
+            runs-on: macos-13
+          - target: aarch64-macos
+            runs-on: macos-latest
+          - target: x86_64-windows
+            runs-on: windows-latest
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.14.0
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build and Show help
+        run: |
+          zig build run -Dtarget=${{ matrix.target }} -- -h
+          zig build run -Dtarget=${{ matrix.target }} -- p -h
+          zig build run -Dtarget=${{ matrix.target }} -- u -h
+
+      - name: Test
+        run: echo "No testcases yet"
