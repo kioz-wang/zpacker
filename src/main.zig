@@ -15,7 +15,7 @@ const allocator = gpa.allocator();
 const section = zpacker.Section.new()
     .field("attr1", u16, .{ .default = 6 })
     .field("attr2", []const u8, .{ .default = "bye", .length = 6 });
-const Packer = zpacker.Packer(0x6679_7985, 1, section, 16, false, u32, zpacker.crc32zlib_compute);
+const Packer = zpacker.Packer(0x6679_7985, 1, section, 32, false, u32, zpacker.crc32zlib_compute);
 
 const show = Command.new("show").alias("s")
     .about("Show contents of package")
@@ -39,7 +39,8 @@ const unpack = Command.new("unpack").alias("u").alias("disa")
     .arg(Arg.optArg("to", Open(.dir, .{})).long("to").help("Path that unpack to").rawDefault("."))
     .posArg("input", Open(.file, .{}), .{ .help = "Path of package" })
     .optArg("chunk", usize, .{ .long = "chunk", .default = 4 * 1024 * 1024, .help = "Chunk bytes per IO" })
-    .arg(Arg.optArg("header", ?String).long("save_header").help("Save header to"));
+    .arg(Arg.optArg("header", ?String).long("save_header").help("Save header to {TO}/{HEADER}"))
+    .arg(Arg.opt("install", bool).long("install").help("Create folder on path if not exist"));
 
 fn actionShow(args: *show.Result()) void {
     var packer = Packer.from_header_bin(args.input.v, allocator) catch |e| {
@@ -90,7 +91,10 @@ fn actionPack(args: *pack.Result()) void {
         args.literal_files,
         if (args.header) |*h| h.unlazy() catch |e| zargs.exit(e, 1) else null,
         args.payload.unlazy() catch |e| zargs.exit(e, 1),
-        .{ .prefix_header = args.prefix, .chunk = args.chunk },
+        .{
+            .prefix_header = args.prefix,
+            .chunk = args.chunk,
+        },
     ) catch |e| {
         if (args.header) |h| std.fs.cwd().deleteFile(h.s) catch {};
         std.fs.cwd().deleteFile(args.payload.s) catch {};
@@ -109,7 +113,11 @@ fn actionUnpack(args: *unpack.Result()) void {
     else
         null;
 
-    packer.unpack(args.input.v, args.to.v, .{ .save_header = header, .chunk = args.chunk }) catch |e| {
+    packer.unpack(args.input.v, args.to.v, .{
+        .save_header = header,
+        .chunk = args.chunk,
+        .install = args.install,
+    }) catch |e| {
         zargs.exitf(e, 1, "fail to unpack", .{});
     };
 }

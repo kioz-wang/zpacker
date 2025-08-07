@@ -651,7 +651,7 @@ pub fn Packer(
             self: *const Self,
             payload: File,
             to: Dir,
-            config: struct { save_header: ?File = null, chunk: usize = 4096 },
+            config: struct { save_header: ?File = null, chunk: usize = 4096, install: bool = false },
         ) !void {
             if (!self.unpackable) {
                 return error.Unsupported;
@@ -665,7 +665,17 @@ pub fn Packer(
 
             for (self.sections, 0..) |*section, i| {
                 const name = std.mem.sliceTo(&section.filename, 0);
-                const f = try to.createFile(name, .{});
+                if (config.install) {
+                    if (std.fs.path.dirname(name)) |d| {
+                        try to.makePath(d);
+                    }
+                }
+                const f = to.createFile(name, .{}) catch |err| {
+                    if (err == error.FileNotFound) {
+                        log.debug("[payload] incomplete path to {s}, retry with '--install'", .{name});
+                    }
+                    return err;
+                };
                 defer f.close();
 
                 var multiWriter = std.io.multiWriter(.{ digest.writer(), f.writer() });
